@@ -2,17 +2,11 @@
 // Licensed under the MIT license.
 
 import { promises } from "fs";
-import { join } from "path";
-import {
-  LanguageModelChatAssistantMessage,
-  LanguageModelChatMessage,
-  LanguageModelChatSystemMessage,
-  LanguageModelChatUserMessage,
-} from "vscode";
+import { transpile } from "typescript";
 import { buildDynamicPrompt } from "../dynamicPrompt";
-import { getCopilotResponseAsString } from "./utilFunctions";
-import { loadConfig } from "./loadConfig";
-import { LocalTuningScenarioHandler } from "./types";
+import { generatePhrases, getCopilotResponseAsString } from "../utils";
+import { ILocalPromptTuningConfigurations, LocalTuningScenarioHandler } from "./types";
+import path = require("path");
 
 export const promptTuning: LocalTuningScenarioHandler = async (
   request,
@@ -25,15 +19,15 @@ export const promptTuning: LocalTuningScenarioHandler = async (
   };
 
   log("Starting prompt tuning");
-  const { config, outputDir } = await loadConfig();
+  const config = await loadConfig();
 
   log("Config loaded");
   await Promise.all(
     config.userPrompts.map(async (userPrompt, textIndex) => {
-      const startTime = new Date();
+      const phases = generatePhrases(userPrompt);
       const messages = buildDynamicPrompt(
         "inputRai",
-        userPrompt,
+        phases,
         config.dynamicPromptSettings
       ).messages;
 
@@ -49,39 +43,28 @@ export const promptTuning: LocalTuningScenarioHandler = async (
           })
       );
 
-      log(`Prompt[${textIndex}] - all done.`);
+      log(`Prompt[${textIndex}] - all done.
+**Prompt**:
+[
+  ${messages.map((message) => `"${message.content}"`).join(",\n")}
+]
 
-      const promptOutput = [
-        `Start time: ${startTime.toISOString().replace(/:/g, "-")}\n`,
-        `Full prompts: ${messages
-          .map(
-            (message) => `<|im_start|>${getMessageType(message)}\n${message.content}\n<|im_end|>`
-          )
-          .join("\n")}\n\n`,
-        ...outputs.map(
-          (output, index) => `>>>>>>>> Output[${index}/${config.callCount}]:\n${output}\n`
-        ),
-      ];
-
-      const outputFilePath = join(outputDir, `prompt_${textIndex}.txt`);
-      await promises.writeFile(outputFilePath, promptOutput.join("\n"), { encoding: "utf-8" });
-
-      log(`Prompt[${textIndex}] - log saved.`);
-      response.markdown(`Prompt[${textIndex}] done. [View log](file:${outputFilePath})`);
+Outputs:
+${outputs.map((output, index) => `**[${index}]**:\n${output}`).join("\n")}
+`);
     })
   );
-
-  log("All prompts done.");
 };
 
-function getMessageType(message: LanguageModelChatMessage) {
-  if (message instanceof LanguageModelChatSystemMessage) {
-    return "system";
-  } else if (message instanceof LanguageModelChatUserMessage) {
-    return "user";
-  } else if (message instanceof LanguageModelChatAssistantMessage) {
-    return "assistant";
-  } else {
-    return "unknown";
-  }
+async function loadConfig() {
+  const configFilePath = path.join(
+    __dirname,
+    __dirname.endsWith("src") ? "" : "../..",
+    "../../test/chat/mocks/localPromptTuningConfig.ts"
+  );
+  const configFileContent = await promises.readFile(configFilePath, "utf-8");
+  const tsCode = configFileContent.replace(/import\s.+;/g, "");
+  const jsCode = transpile(tsCode);
+
+  return eval(jsCode) as ILocalPromptTuningConfigurations;
 }

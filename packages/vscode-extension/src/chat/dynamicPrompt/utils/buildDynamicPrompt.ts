@@ -121,16 +121,4 @@ const functionBuilders: IFunctionBuilder[] = [
       return builtArray.filter((item) => !!item).join(separator);
     },
   },
-  {
-    // stringify(value)
-    regex: /^\s*stringify\s*\(\s*(.+)\s*\)\s*$/,
-    build: (args, params) => {
-      const value = getDeepValue(args[0], params);
-      if (value === undefined) {
-        return "";
-      }
-
-      return JSON.stringify(value);
-    },
-  },
 ];
