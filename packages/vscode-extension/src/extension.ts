@@ -228,6 +228,9 @@ function activateOfficeDevRegistration(context: vscode.ExtensionContext) {
   if (vscode.workspace.isTrusted) {
     registerOfficeDevCodeLensProviders(context);
   }
+
+  // Register task and debug event handlers, as well as sending telemetries
+  registerTeamsfxTaskAndDebugEvents();
 }
 
 /**
