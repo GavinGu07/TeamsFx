@@ -1,12 +1,11 @@
-import * as vscode from "vscode";
-import * as globalVariables from "../globalVariables";
+import { ok } from "@microsoft/teamsfx-api";
 import { Correlator, isValidOfficeAddInProject } from "@microsoft/teamsfx-core";
-import { DebugNoSessionId, endLocalDebugSession, getLocalDebugSession, getLocalDebugSessionId } from "./commonUtils";
-import { updateProjectStatus } from "../utils/projectStatusUtils";
+import * as vscode from "vscode";
 import { CommandKey } from "../constants";
-import { UserError, err, ok } from "@microsoft/teamsfx-api";
-import { ExtensionErrors, ExtensionSource } from "../error";
+import * as globalVariables from "../globalVariables";
+import { updateProjectStatus } from "../utils/projectStatusUtils";
 import * as commonUtils from "./commonUtils";
+import { endLocalDebugSession, getLocalDebugSessionId } from "./commonUtils";
 import { DebugSessionExists } from "./constants";
 
 export const allRunningOfficeTasks: Map<string, number> = new Map<string, number>();
@@ -70,20 +69,14 @@ function isDebugPreLaunchTask(task: vscode.Task): boolean {
 }
 
 async function onDidStartTaskHandler(event: vscode.TaskStartEvent): Promise<void> {
-    if (isOfficeTask(event.execution.task)) {
-        trackedTasks.add(event.execution.task.name);
-        if (isDebugPreLaunchTask(event.execution.task)) {
-            if (await commonUtils.checkAndSkipDebugging()) {
-                throw new Error(DebugSessionExists);
-            } else {
-                commonUtils.startLocalDebugSession();
-            }
-        }
+    const task = event.execution.task;
+    if (isOfficeTask(task) || isDebugPreLaunchTask(task)) {
+        trackedTasks.add(task.name);
     }
 }
 
 function onDidEndTaskHandler(event: vscode.TaskEndEvent): void {
-    if (isOfficeTask(event.execution.task)) {
+    if (isOfficeTask(event.execution.task) || isDebugPreLaunchTask(event.execution.task)) {
         trackedTasks.delete(event.execution.task.name);
     }
 }
@@ -91,76 +84,17 @@ function onDidEndTaskHandler(event: vscode.TaskEndEvent): void {
 async function onDidStartTaskProcessHandler(event: vscode.TaskProcessStartEvent): Promise<void> {
     if (globalVariables.workspaceUri && isValidOfficeAddInProject(globalVariables.workspaceUri.fsPath)) {
         const task = event.execution.task;
-        if (task.scope !== undefined && isOfficeTask(task)) {
+        if (task.scope !== undefined && (isOfficeTask(task) || isDebugPreLaunchTask(task))) {
             allRunningOfficeTasks.set(getTaskKey(task), event.processId);
-
-            if (isDebugPreLaunchTask(task)) {
-                // Handle cases that some services failed immediately after start.
-                const currentSession = getLocalDebugSession();
-                if (currentSession.id !== DebugNoSessionId) {
-                    if (currentSession.failedServices.length > 0) {
-                        terminateAllRunningOfficeTasks();
-                        await vscode.debug.stopDebugging();
-                        if (globalVariables.workspaceUri?.fsPath) {
-                            await updateProjectStatus(
-                                globalVariables.workspaceUri.fsPath,
-                                CommandKey.LocalDebug,
-                                err(
-                                    new UserError({
-                                        source: ExtensionSource,
-                                        name: ExtensionErrors.DebugServiceFailedBeforeStartError,
-                                    })
-                                ),
-                                true
-                            );
-                        }
-                        endLocalDebugSession();
-                        return;
-                    }
-
-                    await updateProjectStatus(
-                        globalVariables.workspaceUri.fsPath,
-                        CommandKey.LocalDebug,
-                        ok(undefined),
-                        true
-                    );
-                }
-            }
         }
     }
 }
 
 
 async function onDidEndTaskProcessHandler(event: vscode.TaskProcessEndEvent): Promise<void> {
-    const timestamp = new Date();
     const task = event.execution.task;
-
-    if (task.scope !== undefined && isOfficeTask(task)) {
-        const currentSession = getLocalDebugSession();
-        if (event.exitCode !== 0) {
-            currentSession.failedServices.push({ name: task.name, exitCode: event.exitCode });
-        }
+    if (task.scope !== undefined && (isOfficeTask(task) || isDebugPreLaunchTask(task))) {
         allRunningOfficeTasks.delete(getTaskKey(task));
-        if (isDebugPreLaunchTask(task)) {
-            // If this pre launch task (Debug: Excel/Word/PowerPoint Desktop) exits (even exitCode is 0) before being successfully started, the debug fails.
-            if (currentSession.id !== DebugNoSessionId) {
-                terminateAllRunningOfficeTasks();
-                if (globalVariables.workspaceUri?.fsPath) {
-                    await updateProjectStatus(
-                        globalVariables.workspaceUri.fsPath,
-                        CommandKey.LocalDebug,
-                        err(
-                            new UserError({
-                                source: ExtensionSource,
-                                name: ExtensionErrors.DebugServiceFailedBeforeStartError,
-                            })
-                        ),
-                        true
-                    );
-                }
-                endLocalDebugSession();
-            }
-        }
     }
 }
 
@@ -173,29 +107,12 @@ async function onDidStartDebugSessionHandler(event: vscode.DebugSession): Promis
             debugConfig.name &&
             !debugConfig.postDebugTask
         ) {
-            allRunningDebugSessions.add(event.id);
-        }
-
-        // Handle cases that some services failed immediately after start.
-        const currentSession = getLocalDebugSession();
-        if (currentSession.id !== DebugNoSessionId && currentSession.failedServices.length > 0) {
-            terminateAllRunningOfficeTasks();
-            await vscode.debug.stopDebugging();
-            if (globalVariables.workspaceUri?.fsPath) {
-                await updateProjectStatus(
-                    globalVariables.workspaceUri.fsPath,
-                    CommandKey.LocalDebug,
-                    err(
-                        new UserError({
-                            source: ExtensionSource,
-                            name: ExtensionErrors.DebugServiceFailedBeforeStartError,
-                        })
-                    ),
-                    true
-                );
+            if (await commonUtils.checkAndSkipDebugging()) {
+                throw new Error(DebugSessionExists);
+            } else {
+                commonUtils.startLocalDebugSession();
             }
-            endLocalDebugSession();
-            return;
+            allRunningDebugSessions.add(event.id);
         }
 
         await updateProjectStatus(
@@ -209,7 +126,6 @@ async function onDidStartDebugSessionHandler(event: vscode.DebugSession): Promis
 
 function onDidTerminateDebugSessionHandler(event: vscode.DebugSession): void {
     if (allRunningDebugSessions.has(event.id)) {
-        // a valid debug session
 
         terminateAllRunningOfficeTasks();
 
